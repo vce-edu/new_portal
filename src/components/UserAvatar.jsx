@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
 import { Camera, Loader2 } from "lucide-react";
 import { supabase, secSupabase } from "../createClient";
@@ -11,7 +11,12 @@ import { toTitleCase } from "../utils/formatting";
 
 const HIDDEN_ON = ["/"]; // login page: no avatar here
 const GAP = 8; // space between the avatar and the Dock
-const BTN = 40; // avatar size (matches the Dock buttons)
+const BTN = 40; // avatar size next to the full Dock (matches the Dock buttons)
+const CARD_W = 320; // profile card width (w-80)
+
+// Must match COMPACT_MAX_WIDTH in Dock.jsx: below this the Dock collapses into
+// a circle on the left, so the avatar moves to the right edge of the screen.
+const COMPACT_QUERY = "(max-width: 767px)";
 
 const LEVELS = { 3: "Owner", 2: "Manager" };
 
@@ -46,25 +51,47 @@ function initialsOf(name) {
   return (first + last).toUpperCase();
 }
 
+function useIsCompact() {
+  const [compact, setCompact] = useState(
+    () => typeof window !== "undefined" && window.matchMedia(COMPACT_QUERY).matches
+  );
+
+  useEffect(() => {
+    const mq = window.matchMedia(COMPACT_QUERY);
+    const onChange = (e) => setCompact(e.matches);
+    setCompact(mq.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+
+  return compact;
+}
+
 /* -------------------------------------------------------------------------- */
 /*  Component — render ONCE inside the router, next to <NavHistory />          */
-/*  Sits to the LEFT of the Dock. Opens on hover (and on focus/tap).           */
+/*  Wide screens: sits to the LEFT of the Dock and opens on hover/focus.       */
+/*  Compact screens: pinned to the top-right and opens on tap.                 */
 /* -------------------------------------------------------------------------- */
 
 // onGetIdCard (optional): called when "Get ID Card" is clicked, with { user, name, email, role, branch, staffId }
 export default function UserAvatar({ onGetIdCard }) {
   const { pathname } = useLocation();
   const { user, role, roleLevel, branch, staffId, avatarUrl, setAvatarUrl } = useAuth();
+  const compact = useIsCompact();
   const [pos, setPos] = useState(null); // { left, top }
+  const [open, setOpen] = useState(false); // tap-to-open (compact screens)
   const [imgFailed, setImgFailed] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState("");
 
+  const wrapRef = useRef(null);
   const dockRef = useRef(null);
   const roRef = useRef(null);
 
-  // stick to the left edge of the Dock (it widens on hover, so we follow it)
+  // Wide screens: stick to the left edge of the Dock (it widens on hover, so we follow it)
   useLayoutEffect(() => {
+    if (compact) return; // pinned to the right edge via CSS, nothing to track
+
     let frame = 0;
     let observed = null; // the Dock element roRef is currently watching
     let loop = 0; // per-frame tracking while the Dock animates
@@ -126,7 +153,25 @@ export default function UserAvatar({ onGetIdCard }) {
       mo.disconnect();
       roRef.current?.disconnect();
     };
-  }, [pathname]);
+  }, [pathname, compact]);
+
+  // Close the tapped-open card when tapping elsewhere or pressing Escape
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false);
+    };
+    const onKey = (e) => e.key === "Escape" && setOpen(false);
+    document.addEventListener("pointerdown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  // Reset the tapped-open state when the layout flips or the route changes
+  useEffect(() => setOpen(false), [compact, pathname]);
 
   if (HIDDEN_ON.includes(pathname) || !user) return null;
 
@@ -198,20 +243,43 @@ export default function UserAvatar({ onGetIdCard }) {
     <span className="text-sm font-medium">{initialsOf(name)}</span>
   );
 
-  return (
-    <div
-      className="group fixed z-50 print:hidden"
-      style={{
+  // Beside the full Dock the avatar can be close to the left edge: if the card
+  // would run off-screen when growing leftwards, grow rightwards instead.
+  const anchorLeft = !compact && pos && pos.left + BTN < CARD_W + GAP;
+
+  // Compact: pinned top-right, same size and top offset as the Dock's circle
+  const wrapperStyle = compact
+    ? {
+        right: "max(0.75rem, env(safe-area-inset-right))",
+        top: "max(0.75rem, env(safe-area-inset-top))",
+      }
+    : {
         left: pos?.left ?? 0,
         top: pos?.top ?? 0,
         visibility: pos ? "visible" : "hidden",
-      }}
-    >
+      };
+
+  const cardShown = "visible translate-y-0 scale-100 opacity-100";
+  const cardHidden = "invisible translate-y-1 scale-95 opacity-0";
+  const cardHover =
+    "group-hover:visible group-hover:translate-y-0 group-hover:scale-100 group-hover:opacity-100 group-focus-within:visible group-focus-within:translate-y-0 group-focus-within:scale-100 group-focus-within:opacity-100";
+
+  return (
+    <div ref={wrapRef} className="group fixed z-50 print:hidden" style={wrapperStyle}>
       <button
         type="button"
         aria-label="Your profile"
         aria-haspopup="true"
-        className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-full bg-primaryLight text-primary transition-shadow focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 group-hover:ring-2 group-hover:ring-primary/30"
+        aria-expanded={compact ? open : undefined}
+        onClick={() => compact && setOpen((v) => !v)}
+        className={[
+          "flex items-center justify-center overflow-hidden rounded-full bg-primaryLight text-primary transition-all duration-200",
+          "focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40",
+          compact
+            ? "h-11 w-11 border-2 border-primary/20 shadow-[0_12px_28px_-14px_rgba(17,24,39,0.35)] active:scale-95"
+            : "h-10 w-10 group-hover:ring-2 group-hover:ring-primary/30",
+          compact && open ? "ring-2 ring-primary/30" : "",
+        ].join(" ")}
       >
         {face}
       </button>
@@ -220,9 +288,13 @@ export default function UserAvatar({ onGetIdCard }) {
       <div
         role="dialog"
         aria-label="Profile details"
-        className="invisible absolute right-0 top-full origin-top-right translate-y-1 scale-95 pt-2 opacity-0 transition-all duration-200 ease-out group-hover:visible group-hover:translate-y-0 group-hover:scale-100 group-hover:opacity-100 group-focus-within:visible group-focus-within:translate-y-0 group-focus-within:scale-100 group-focus-within:opacity-100"
+        className={[
+          "absolute top-full pt-2 transition-all duration-200 ease-out",
+          anchorLeft ? "left-0 origin-top-left" : "right-0 origin-top-right",
+          open ? cardShown : compact ? cardHidden : `${cardHidden} ${cardHover}`,
+        ].join(" ")}
       >
-        <div className="w-80 rounded-xl border border-border bg-background p-3 shadow-xl">
+        <div className="w-[min(20rem,calc(100vw-1.5rem))] rounded-xl border border-border bg-background p-3 shadow-xl">
           <div className="flex items-center gap-3">
             {/* click the photo to upload a new one */}
             <label
@@ -252,7 +324,10 @@ export default function UserAvatar({ onGetIdCard }) {
                 {email && <p className="min-w-0 flex-1 truncate text-xs text-muted">{email}</p>}
                 <button
                   type="button"
-                  onClick={() => onGetIdCard?.({ user, name, email, role, branch, staffId })}
+                  onClick={() => {
+                    setOpen(false);
+                    onGetIdCard?.({ user, name, email, role, branch, staffId });
+                  }}
                   className="shrink-0 whitespace-nowrap rounded-full bg-primaryLight px-2.5 py-1 text-xs font-medium text-primary transition-colors hover:bg-primary hover:text-background focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
                 >
                   Get ID Card

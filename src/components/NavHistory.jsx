@@ -3,9 +3,7 @@ import { useLocation, useNavigate, useNavigationType } from "react-router-dom";
 import { ArrowLeft, ArrowRight, ChevronRight, Home, X } from "lucide-react";
 import { toTitleCase } from "../utils/formatting";
 
-/* -------------------------------------------------------------------------- */
-/*  Config — adjust to your routes                                             */
-/* -------------------------------------------------------------------------- */
+
 
 const LABELS = {
   "/": "Login",
@@ -20,14 +18,26 @@ const HIDDEN_ON = ["/"]; // login page: no history bar here
 const MAX_STACK = 50; // how many visited pages we remember
 const STORAGE_KEY = "nav-history-v1";
 
+// Must match COMPACT_MAX_WIDTH in Dock.jsx: below this the Dock collapses into a
+// circle (left) and the avatar moves to the right, so this bar stops hanging
+// from the Dock and attaches to the top of the page between the two instead.
+const COMPACT_QUERY = "(max-width: 767px)";
+
 // Layout maths (px)
-const EDGE = 16;   // min distance from screen edges (small screens)
+const EDGE = 16;   // min distance from screen edges (wide screens)
 const INSET = 14;  // how far the tab is narrower than the Dock on each side
-const BAR_H = 40;  // tab height
+const BAR_H = 40;  // tab height under the Dock (wide screens)
 const CHROME = 168; // home + arrow + clear buttons + paddings + gaps
 const ITEM_PAD = 20; // horizontal padding of one trail item
 const SEP = 18; //    chevron between trail items
 const DOTS = 22; //   the "…" marker
+
+// Compact (top-of-page) layout
+const CIRCLE = 44;   // size of the Dock circle / avatar on compact screens
+const CIRCLE_TOP = 12; // their distance from the top and side edges
+const SIDE = CIRCLE_TOP + CIRCLE + 8; // space reserved on each side for them
+const CHROME_SLIM = 100; // back + forward only (very narrow phones)
+const SLIM_BELOW = 280;  // below this bar width, Home and Clear are hidden
 
 const labelFor = (pathname) =>
   LABELS[pathname] ||
@@ -69,6 +79,9 @@ function findDock(self) {
   return null;
 }
 
+const sameLayout = (a, b) =>
+  a && a.avail === b.avail && a.top === b.top && a.compact === b.compact && a.chrome === b.chrome;
+
 /* -------------------------------------------------------------------------- */
 /*  Component — render ONCE inside the router, next to your <Routes>           */
 /* -------------------------------------------------------------------------- */
@@ -78,7 +91,7 @@ export default function NavHistory() {
   const type = useNavigationType(); // "PUSH" | "POP" | "REPLACE"
   const navigate = useNavigate();
   const [nav, setNav] = useState(load);
-  const [layout, setLayout] = useState(null); // { avail, top }
+  const [layout, setLayout] = useState(null); // { avail, top, compact, chrome }
 
   const barRef = useRef(null);
   const dockRef = useRef(null);
@@ -126,36 +139,46 @@ export default function NavHistory() {
     }
   }, [nav]);
 
-  /* ---- measure the Dock and work out how much room we really have ---- */
+  /* ---- work out where the bar goes and how much room it really has ---- */
   useLayoutEffect(() => {
     let frame = 0;
 
     function measure() {
       frame = 0;
-      // every page renders its own <Dock/>, so re-find it if it was replaced
-      if (!dockRef.current || !dockRef.current.isConnected) {
-        dockRef.current = findDock(barRef.current);
-        restW.current = Infinity; // new Dock element: start measuring again
-        roRef.current?.disconnect();
-        if (dockRef.current && roRef.current) roRef.current.observe(dockRef.current);
-      }
-
       const vw = window.innerWidth;
-      const dock = dockRef.current?.getBoundingClientRect();
       let next;
 
-      if (!dock) {
-        next = { avail: vw - EDGE * 2, top: EDGE };
+      if (window.matchMedia(COMPACT_QUERY).matches) {
+        // Compact: no Dock to follow. The bar is pinned to the top of the page,
+        // between the Dock circle (left) and the avatar (right).
+        restW.current = Infinity; // forget the old Dock width
+        const avail = Math.max(120, vw - SIDE * 2);
+        next = { compact: true, avail, top: 0, chrome: avail < SLIM_BELOW ? CHROME_SLIM : CHROME };
       } else {
-        // the Dock widens on hover, so only ever remember its smallest width
-        restW.current = Math.min(restW.current, dock.width);
-        next = {
-          avail: Math.floor(Math.min(restW.current - INSET * 2, vw - EDGE * 2)),
-          top: Math.round(dock.bottom - 1), // overlap the Dock's bottom border by 1px
-        };
+        // every page renders its own <Dock/>, so re-find it if it was replaced
+        if (!dockRef.current || !dockRef.current.isConnected) {
+          dockRef.current = findDock(barRef.current);
+          restW.current = Infinity; // new Dock element: start measuring again
+          roRef.current?.disconnect();
+          if (dockRef.current && roRef.current) roRef.current.observe(dockRef.current);
+        }
+
+        const dock = dockRef.current?.getBoundingClientRect();
+        if (!dock) {
+          next = { compact: false, avail: vw - EDGE * 2, top: EDGE, chrome: CHROME };
+        } else {
+          // the Dock widens on hover, so only ever remember its smallest width
+          restW.current = Math.min(restW.current, dock.width);
+          next = {
+            compact: false,
+            avail: Math.floor(Math.min(restW.current - INSET * 2, vw - EDGE * 2)),
+            top: Math.round(dock.bottom - 1), // overlap the Dock's bottom border by 1px
+            chrome: CHROME,
+          };
+        }
       }
 
-      setLayout((p) => (p && p.avail === next.avail && p.top === next.top ? p : next));
+      setLayout((p) => (sameLayout(p, next) ? p : next));
     }
 
     const schedule = () => {
@@ -178,7 +201,7 @@ export default function NavHistory() {
     };
   }, [pathname]);
 
-  /* ---- how many trail items fit without touching the Dock ---- */
+  /* ---- how many trail items fit in the room we have ---- */
   const { stack, index } = nav;
 
   const textWidth = useMemo(() => {
@@ -196,7 +219,7 @@ export default function NavHistory() {
 
     let lo = index;
     let hi = index;
-    let used = CHROME + w(index);
+    let used = layout.chrome + w(index);
     let progressed = true;
 
     // grow outward from the current page, one step back then one step forward
@@ -221,10 +244,12 @@ export default function NavHistory() {
 
   if (HIDDEN_ON.includes(pathname) || index < 0) return null;
 
+  const compact = !!layout?.compact;
+  const slim = compact && layout.avail < SLIM_BELOW; // very narrow: back/forward only
   const canBack = index > 0;
   const canForward = index < stack.length - 1;
   const items = stack.slice(range.lo, range.hi + 1).map((e, n) => ({ ...e, i: range.lo + n }));
-  const currentMax = layout ? Math.max(60, layout.avail - CHROME - ITEM_PAD) : 160;
+  const currentMax = layout ? Math.max(60, layout.avail - layout.chrome - ITEM_PAD) : 160;
 
   // keep only the page the user is on right now
   function clearHistory() {
@@ -234,30 +259,48 @@ export default function NavHistory() {
   const btn =
     "flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-secondary transition-colors hover:bg-primaryLight focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 disabled:pointer-events-none disabled:opacity-35";
 
-  return (
-    <nav
-      ref={barRef}
-      aria-label="Page history"
-      style={{
+  // Compact: a strip hanging from the top edge, between the circle and the avatar.
+  // Its top padding matches the circles' offset so all three line up in one row.
+  const topGap = "max(0.75rem, env(safe-area-inset-top, 0px))";
+  const barStyle = compact
+    ? {
+        left: `calc(${SIDE}px + env(safe-area-inset-left, 0px))`,
+        right: `calc(${SIDE}px + env(safe-area-inset-right, 0px))`,
+        top: 0,
+        paddingTop: topGap,
+        height: `calc(${topGap} + ${CIRCLE}px)`,
+      }
+    : {
         left: "50%",
         transform: "translateX(-50%)",
         top: layout?.top ?? 0,
         width: layout?.avail,
         height: BAR_H,
         visibility: layout ? "visible" : "hidden",
-      }}
-      className="fixed z-40 flex items-center justify-between gap-1 overflow-hidden rounded-b-xl border border-t-0 border-border bg-background/80 px-2 backdrop-blur-md shadow-[0_12px_28px_-14px_rgba(17,24,39,0.25)] print:hidden"
+      };
+
+  return (
+    <nav
+      ref={barRef}
+      aria-label="Page history"
+      style={{ ...barStyle, visibility: layout ? "visible" : "hidden" }}
+      className={[
+        "fixed z-40 flex items-center justify-between gap-1 overflow-hidden border border-t-0 border-border bg-background/80 px-2 backdrop-blur-md shadow-[0_12px_28px_-14px_rgba(17,24,39,0.25)] print:hidden",
+        compact ? "rounded-b-2xl" : "rounded-b-xl",
+      ].join(" ")}
     >
-      <button
-        type="button"
-        className={btn}
-        disabled={pathname === HOME}
-        onClick={() => navigate(HOME)}
-        aria-label="Home"
-        title="Home (Dashboard)"
-      >
-        <Home className="h-4 w-4" strokeWidth={2} />
-      </button>
+      {!slim && (
+        <button
+          type="button"
+          className={btn}
+          disabled={pathname === HOME}
+          onClick={() => navigate(HOME)}
+          aria-label="Home"
+          title="Home (Dashboard)"
+        >
+          <Home className="h-4 w-4" strokeWidth={2} />
+        </button>
+      )}
       <button
         type="button"
         className={btn}
@@ -310,7 +353,7 @@ export default function NavHistory() {
         {range.hi < stack.length - 1 && <li className="px-1 text-muted">…</li>}
       </ol>
 
-      {stack.length > 1 && (
+      {!slim && stack.length > 1 && (
         <button
           type="button"
           className={btn}

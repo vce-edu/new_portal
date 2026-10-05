@@ -26,7 +26,9 @@ const COMPACT_QUERY = "(max-width: 767px)";
 // Layout maths (px)
 const EDGE = 16;   // min distance from screen edges (wide screens)
 const INSET = 14;  // how far the tab is narrower than the Dock on each side
+const DEBUG = false; // set to true to log every layout change to the browser console
 const BAR_H = 40;  // tab height under the Dock (wide screens)
+const MIN_BAR_W = 260; // the bar never gets narrower than this, whatever the Dock measures
 const CHROME = 168; // home + arrow + clear buttons + paddings + gaps
 const ITEM_PAD = 20; // horizontal padding of one trail item
 const SEP = 18; //    chevron between trail items
@@ -79,6 +81,14 @@ function findDock(self) {
   return null;
 }
 
+// Pick the real (wide) Dock: ignore the small collapsed-Dock circle if it is in the page
+function pickDock(self) {
+  const wide = [...document.querySelectorAll("[data-dock]")].filter(
+    (el) => el.getBoundingClientRect().width > 100
+  );
+  return wide[0] || findDock(self);
+}
+
 const sameLayout = (a, b) =>
   a && a.avail === b.avail && a.top === b.top && a.compact === b.compact && a.chrome === b.chrome;
 
@@ -95,7 +105,6 @@ export default function NavHistory() {
 
   const barRef = useRef(null);
   const dockRef = useRef(null);
-  const roRef = useRef(null);
   const canvasRef = useRef(null);
   const restW = useRef(Infinity);
 
@@ -140,66 +149,63 @@ export default function NavHistory() {
   }, [nav]);
 
   /* ---- work out where the bar goes and how much room it really has ---- */
+  // Instead of reacting to resize/mutation events (which miss slides, fades and
+  // content that loads late, e.g. after a refresh), read the Dock's real on-screen
+  // box every frame and only re-render when something actually changed.
   useLayoutEffect(() => {
-    let frame = 0;
+    let raf = 0;
+    let lastEl = null;
 
     function measure() {
-      frame = 0;
       const vw = window.innerWidth;
       let next;
 
       if (window.matchMedia(COMPACT_QUERY).matches) {
         // Compact: no Dock to follow. The bar is pinned to the top of the page,
         // between the Dock circle (left) and the avatar (right).
-        restW.current = Infinity; // forget the old Dock width
+        restW.current = Infinity;
+        lastEl = null;
         const avail = Math.max(120, vw - SIDE * 2);
         next = { compact: true, avail, top: 0, chrome: avail < SLIM_BELOW ? CHROME_SLIM : CHROME };
       } else {
         // every page renders its own <Dock/>, so re-find it if it was replaced
-        if (!dockRef.current || !dockRef.current.isConnected) {
-          dockRef.current = findDock(barRef.current);
+        if (!dockRef.current || !dockRef.current.isConnected) dockRef.current = pickDock(barRef.current);
+        const el = dockRef.current;
+        if (el !== lastEl) {
           restW.current = Infinity; // new Dock element: start measuring again
-          roRef.current?.disconnect();
-          if (dockRef.current && roRef.current) roRef.current.observe(dockRef.current);
+          lastEl = el;
         }
 
-        const dock = dockRef.current?.getBoundingClientRect();
-        if (!dock) {
-          next = { compact: false, avail: vw - EDGE * 2, top: EDGE, chrome: CHROME };
+        const r = el ? el.getBoundingClientRect() : null;
+        if (!r || r.width < 1) {
+          next = { compact: false, avail: Math.max(MIN_BAR_W, vw - EDGE * 2), top: EDGE, chrome: CHROME };
         } else {
-          // the Dock widens on hover, so only ever remember its smallest width
-          restW.current = Math.min(restW.current, dock.width);
+          // The Dock widens while hovered, so only follow its width while the mouse is NOT over it
+          if (!el.matches(":hover") || !Number.isFinite(restW.current)) restW.current = r.width;
           next = {
             compact: false,
-            avail: Math.floor(Math.min(restW.current - INSET * 2, vw - EDGE * 2)),
-            top: Math.round(dock.bottom - 1), // overlap the Dock's bottom border by 1px
+            avail: Math.floor(Math.min(vw - EDGE * 2, Math.max(MIN_BAR_W, restW.current - INSET * 2))),
+            top: Math.round(r.bottom - 1), // overlap the Dock's bottom border by 1px
             chrome: CHROME,
           };
         }
       }
 
-      setLayout((p) => (sameLayout(p, next) ? p : next));
+      setLayout((p) => {
+        if (sameLayout(p, next)) return p;
+        if (DEBUG) console.log("[NavHistory] layout", next, "dock:", dockRef.current);
+        return next;
+      });
     }
 
-    const schedule = () => {
-      if (!frame) frame = requestAnimationFrame(measure);
+    const loop = () => {
+      if (!document.hidden) measure();
+      raf = requestAnimationFrame(loop);
     };
+    loop();
 
-    roRef.current = new ResizeObserver(schedule);
-    measure();
-
-    window.addEventListener("resize", schedule);
-    // Dock gets re-mounted on route change; also catches it loading late
-    const mo = new MutationObserver(schedule);
-    mo.observe(document.getElementById("root") || document.body, { childList: true, subtree: true });
-
-    return () => {
-      cancelAnimationFrame(frame);
-      window.removeEventListener("resize", schedule);
-      mo.disconnect();
-      roRef.current?.disconnect();
-    };
-  }, [pathname]);
+    return () => cancelAnimationFrame(raf);
+  }, []);
 
   /* ---- how many trail items fit in the room we have ---- */
   const { stack, index } = nav;

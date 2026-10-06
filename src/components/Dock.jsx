@@ -29,6 +29,7 @@ import {
   Trash2,
   X,
   Check,
+  History,
 } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
 import { useBranchFilter } from "../context/BranchFilterContext";
@@ -624,6 +625,7 @@ export default function Dock() {
     viewDashboard: true,
     // Payments
     payFees: isOwner || isManager || isStudentMgmt,
+    viewTransactions: isOwner || isManager || isStudentMgmt,
     addExpense: isOwner,
     viewReport: isOwner || isManager,
   };
@@ -656,6 +658,7 @@ export default function Dock() {
 
   const paymentItems = visible([
     { show: can.payFees, icon: CreditCard, text: "Pay Fees", onClick: () => setShowAddTransaction(true) },
+    { show: can.viewTransactions, icon: History, text: "Transaction History", onClick: () => navigate("/transactions") },
     { show: can.addExpense, icon: TrendingDown, text: "Add Expense", onClick: () => setShowAddExpense(true) },
     { show: can.viewReport, icon: FileBarChart, text: "View Report", onClick: () => navigate("/revenue") },
   ]);

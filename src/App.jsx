@@ -11,6 +11,7 @@ import NavHistory from './components/NavHistory.jsx';
 import ScholarshipApplicants from './pages/Scholarship.jsx';
 import NavMenu from './components/NavMenu.jsx';
 import UserAvatar from './components/UserAvatar.jsx';
+import Branches from './pages/Branches.jsx';
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth();
@@ -71,6 +72,14 @@ export default function App() {
         element={
           <ProtectedRoute>
             <ScholarshipApplicants/>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path='/branches'
+        element={
+          <ProtectedRoute>
+            <Branches/>
           </ProtectedRoute>
         }
       />

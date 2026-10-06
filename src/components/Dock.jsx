@@ -35,6 +35,8 @@ import { useAuth } from "../context/AuthContext";
 import { useBranchFilter } from "../context/BranchFilterContext";
 import { supabase } from "../createClient";
 import AddStudentModal from "./AddStudentModal.jsx";
+import AddStaffModal from "./AddStaffModal.jsx";
+import DeleteStaffModal from "./DeleteStaffModal.jsx";
 import AddTransactionModal from "./AddTransactionModal.jsx";
 import AddExpenseModal from "./AddExpenseModal.jsx";
 import DeleteStudentModal from "./DeleteStudentModal.jsx";
@@ -47,8 +49,14 @@ const APPLICANTS_ROUTE = "/scholarship";
 // Route of the exams page (change if yours differs)
 const EXAMS_ROUTE = "/exam";
 
+// Route of the branches page (change if yours differs)
+const BRANCHES_ROUTE = "/branches";
+
 // Fired after an applicant is added from the dock so an open applicants page can refresh
 export const APPLICANTS_CHANGED_EVENT = "applicants:changed";
+
+// Fired after a staff member is added from the dock so an open branches page can refresh
+export const STAFF_CHANGED_EVENT = "staff:changed";
 
 // Below this width the full dock no longer fits (including hover-expanded buttons),
 // so it collapses into a single branch circle that opens a sidebar.
@@ -585,6 +593,8 @@ function CompactDock({ sections, utilityItems }) {
 
 export default function Dock() {
   const [showAddStudent, setShowAddStudent] = useState(false);
+  const [showAddStaff, setShowAddStaff] = useState(false);
+  const [showDeleteStaff, setShowDeleteStaff] = useState(false);
   const [showAddApplicant, setShowAddApplicant] = useState(false);
   const [showAddTransaction, setShowAddTransaction] = useState(false);
   const [showAddExpense, setShowAddExpense] = useState(false);
@@ -606,24 +616,20 @@ export default function Dock() {
   const canManageApplicants = isOwner || isManager || isStudentMgmt || isMarketing;
 
   const can = {
-    // Add
     addStudent: isOwner || isManager || isStudentMgmt,
     addApplicant: canManageApplicants,
     addExam: isOwner || isManager || isFaculty,
     addStaff: isOwner || isManager,
-    // Delete
     deleteStudent: isOwner || isManager || isStudentMgmt,
     deleteTransaction: isOwner || isManager || isStudentMgmt,
     deleteApplicant: canManageApplicants,
     deleteExam: isOwner || isManager || isFaculty,
     deleteStaff: isOwner || isManager,
-    // View
     viewStudents: isOwner || isManager || isStudentMgmt || isFaculty,
     viewApplicants: canManageApplicants,
     viewExams: isOwner || isManager || isFaculty,
     viewBranches: isOwner,
     viewDashboard: true,
-    // Payments
     payFees: isOwner || isManager || isStudentMgmt,
     viewTransactions: isOwner || isManager || isStudentMgmt,
     addExpense: isOwner,
@@ -637,7 +643,7 @@ export default function Dock() {
     { show: can.addStudent, icon: GraduationCap, text: "Add Student", onClick: () => setShowAddStudent(true) },
     { show: can.addApplicant, icon: UserPlus, text: "Add Applicant", onClick: () => setShowAddApplicant(true) },
     { show: can.addExam, icon: FilePlus, text: "Add Exam" }, // TODO: open your add-exam modal
-    { show: can.addStaff, icon: UserCog, text: "Add Staff" },
+    { show: can.addStaff, icon: UserCog, text: "Add Staff", onClick: () => setShowAddStaff(true) },
   ]);
 
   const deleteItems = visible([
@@ -645,14 +651,14 @@ export default function Dock() {
     { show: can.deleteTransaction, icon: Receipt, text: "Delete Transaction", onClick: () => setShowDeleteTransaction(true) },
     { show: can.deleteApplicant, icon: Trash2, text: "Delete Applicant" }, // TODO: open your delete-applicant modal
     { show: can.deleteExam, icon: FileMinus, text: "Delete Exam" }, // TODO: open your delete-exam modal
-    { show: can.deleteStaff, icon: UserX, text: "Delete Staff" },
+    { show: can.deleteStaff, icon: UserX, text: "Delete Staff", onClick: () => setShowDeleteStaff(true) },
   ]);
 
   const viewItems = visible([
     { show: can.viewStudents, icon: GraduationCap, text: "View Students", onClick: () => navigate("/students") },
     { show: can.viewApplicants, icon: ClipboardList, text: "View Applicants", onClick: () => navigate(APPLICANTS_ROUTE) },
     { show: can.viewExams, icon: ClipboardCheck, text: "View Exams", onClick: () => navigate(EXAMS_ROUTE) },
-    { show: can.viewBranches, icon: Building2, text: "View Branches" },
+    { show: can.viewBranches, icon: Building2, text: "View Branches", onClick: () => navigate(BRANCHES_ROUTE) },
     { show: can.viewDashboard, icon: BarChart3, text: "View Dashboard", onClick: () => navigate("/dashboard") },
   ]);
 
@@ -695,6 +701,26 @@ export default function Dock() {
       {/* Modals live outside the dock wrapper so they're never affected by its positioning */}
       {showAddStudent && (
         <AddStudentModal onClose={() => setShowAddStudent(false)} onSaved={() => {}} />
+      )}
+
+      {showAddStaff && (
+        <AddStaffModal
+          onClose={() => setShowAddStaff(false)}
+          onSaved={() => {
+            setShowAddStaff(false);
+            window.dispatchEvent(new Event(STAFF_CHANGED_EVENT));
+          }}
+        />
+      )}
+
+      {showDeleteStaff && (
+        <DeleteStaffModal
+          onClose={() => setShowDeleteStaff(false)}
+          onDeleted={() => {
+            setShowDeleteStaff(false);
+            window.dispatchEvent(new Event(STAFF_CHANGED_EVENT));
+          }}
+        />
       )}
 
       {showAddApplicant && (

@@ -1,9 +1,12 @@
 import { jsPDF } from "jspdf";
 import { SEAL_IMAGE_BASE64 } from "./diplomaPdf";
-
+import { secSupabase } from "../createClient";
 
 export const SEAL_SRC_W = 659;
 export const SEAL_SRC_H = 378;
+
+// Bucket in the second Supabase project; files are named "<roll>_<STUDENT NAME>.<ext>"
+const PHOTO_BUCKET = "student-photos";
 
 // ── helpers ──────────────────────────────────────────────────────────────
 
@@ -53,6 +56,38 @@ export async function fetchImageAsDataURL(url) {
       reader.onerror = reject;
       reader.readAsDataURL(blob);
     });
+  }
+}
+
+/**
+ * Finds the applicant's photo URL.
+ * 1. Uses photo_url when the record has one.
+ * 2. Otherwise looks in the bucket for a file named "<roll>_<name>.jpg/jpeg/png"
+ *    and returns its public URL.
+ * Returns "" when nothing is found. Never throws.
+ */
+export async function findPhotoUrl(student) {
+  if (student?.photo_url) return student.photo_url;
+
+  try {
+    const roll = String(student?.roll_number ?? "").trim();
+    if (!roll) return "";
+
+    const bucket = secSupabase.storage.from(PHOTO_BUCKET);
+    const { data, error } = await bucket.list("", { limit: 50, search: `${roll}_` });
+    if (error) {
+      console.error("Photo lookup:", error);
+      return "";
+    }
+
+    // the search matches anywhere in the name, so require the roll to be the prefix
+    const match = (data || []).find(
+      (f) => f.name.startsWith(`${roll}_`) && /\.(jpe?g|png)$/i.test(f.name)
+    );
+    return match ? bucket.getPublicUrl(match.name).data.publicUrl : "";
+  } catch (err) {
+    console.error("Photo lookup:", err);
+    return "";
   }
 }
 
@@ -113,11 +148,12 @@ export async function generateAdmitCardPDF(student, { branchAddress = "" } = {})
   const photoW = 34;
   const photoH = 40;
 
-  // Photo comes from the applicant's stored photo_url
+  // Photo: the applicant's stored photo_url, or the "<roll>_<name>" file in the bucket
   let photoDataURL = null;
-  if (student.photo_url) {
+  const photoUrl = await findPhotoUrl(student);
+  if (photoUrl) {
     try {
-      photoDataURL = await fetchImageAsDataURL(student.photo_url);
+      photoDataURL = await fetchImageAsDataURL(photoUrl);
     } catch (err) {
       console.error("Couldn't load applicant photo:", err);
     }
@@ -125,8 +161,16 @@ export async function generateAdmitCardPDF(student, { branchAddress = "" } = {})
 
   filledRect(photoX - 1, photoY - 1, photoW + 2, photoH + 2, 3, purpleLight);
   if (photoDataURL) {
-    doc.addImage(photoDataURL, "JPEG", photoX, photoY, photoW, photoH);
-  } else {
+    // the canvas path always gives JPEG; the fetch fallback can give PNG
+    const photoFormat = /^data:image\/png/i.test(photoDataURL) ? "PNG" : "JPEG";
+    try {
+      doc.addImage(photoDataURL, photoFormat, photoX, photoY, photoW, photoH);
+    } catch (err) {
+      console.error("Couldn't add applicant photo:", err);
+      photoDataURL = null;
+    }
+  }
+  if (!photoDataURL) {
     filledRect(photoX, photoY, photoW, photoH, 2, [230, 215, 240]);
     doc.setFont("helvetica", "normal");
     doc.setFontSize(7.5);

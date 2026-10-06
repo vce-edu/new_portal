@@ -25,9 +25,11 @@ import {
   splitBatchTime,
   feeStatusStyle,
 } from "../utils/formatting";
-
-// Bucket lives in the second ("sec") Supabase account/project, accessed via secSupabase.
-const PHOTO_BUCKET = "student-photos";
+import {
+  PHOTO_BUCKET,
+  cleanKeyPart,
+  downloadStudentPhoto,
+} from "../utils/studentPhoto";
 
 const FIELDS = [
   { key: "roll_number", label: "Roll Number" },
@@ -212,7 +214,12 @@ export default function StudentModal({ student, onClose, onSaved }) {
   // True from the moment "Add Transaction" is clicked until the transaction modal is closed.
   const [leavingForTx, setLeavingForTx] = useState(false);
 
+  // Local preview of a just-picked file, shown while the upload runs.
   const [photoPreview, setPhotoPreview] = useState("");
+  // Photo fetched from the bucket by roll number.
+  const [bucketPhoto, setBucketPhoto] = useState("");
+  // Bumped after each upload to re-fetch from the bucket.
+  const [photoVersion, setPhotoVersion] = useState(0);
   const [photoUploading, setPhotoUploading] = useState(false);
   const [photoError, setPhotoError] = useState("");
 
@@ -361,6 +368,34 @@ export default function StudentModal({ student, onClose, onSaved }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Load the student's photo from the bucket (<roll>_<name>.<ext>).
+  useEffect(() => {
+    let cancelled = false;
+    let objectUrl = "";
+
+    (async () => {
+      try {
+        const found = await downloadStudentPhoto(data.roll_number);
+        if (cancelled) return;
+
+        if (found) {
+          objectUrl = URL.createObjectURL(found.blob);
+          setBucketPhoto(objectUrl);
+        } else {
+          setBucketPhoto("");
+        }
+      } catch (err) {
+        console.error("Couldn't load student photo:", err);
+        if (!cancelled) setBucketPhoto("");
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [data.roll_number, photoVersion]);
+
   async function loadTransactions() {
     setTxLoading(true);
     setTxError("");
@@ -492,32 +527,58 @@ export default function StudentModal({ student, onClose, onSaved }) {
     uploadPhoto(file);
   }
 
+  // Uploads to the bucket as "<roll>_<name>.<ext>". The bucket is the only source of truth.
   async function uploadPhoto(file) {
-    const ext = file.name.split(".").pop();
-    const path = `${crypto.randomUUID()}.${ext}`;
+    const roll = cleanKeyPart(dataRef.current.roll_number);
+    const name = cleanKeyPart(dataRef.current.student_name);
+
+    if (!roll) {
+      setPhotoUploading(false);
+      setPhotoError("Set a roll number before uploading a photo.");
+      return;
+    }
+
+    let ext = (file.name.split(".").pop() || "").toLowerCase();
+    if (!["jpg", "jpeg", "png"].includes(ext)) {
+      ext = file.type === "image/png" ? "png" : "jpg";
+    }
+
+    const path = `${roll}_${name}.${ext}`;
+    const prefix = `${roll}_`;
+
+    // Remove older photo(s) for this roll so the lookup never finds a stale one.
+    try {
+      const { data: existing } = await secSupabase.storage
+        .from(PHOTO_BUCKET)
+        .list("", { search: prefix, limit: 100 });
+
+      const stale = (existing || [])
+        .filter((f) => f.name.startsWith(prefix) && f.name !== path)
+        .map((f) => f.name);
+
+      if (stale.length) {
+        await secSupabase.storage.from(PHOTO_BUCKET).remove(stale);
+      }
+    } catch (err) {
+      console.error("Couldn't clean old photos:", err);
+    }
 
     const { error: uploadError } = await secSupabase.storage
       .from(PHOTO_BUCKET)
       .upload(path, file, {
         cacheControl: "3600",
-        upsert: false,
-        contentType: file.type || "image/jpeg",
+        upsert: true,
+        contentType: file.type || (ext === "png" ? "image/png" : "image/jpeg"),
       });
 
+    setPhotoUploading(false);
+
     if (uploadError) {
-      setPhotoUploading(false);
       setPhotoError(uploadError.message);
       return;
     }
 
-    const { data: urlData } = secSupabase.storage.from(PHOTO_BUCKET).getPublicUrl(path);
-
-    const result = await persist({ photo_url: urlData.publicUrl });
-    setPhotoUploading(false);
-
-    if (!result.ok) {
-      setPhotoError(result.message);
-    }
+    setPhotoVersion((v) => v + 1); // re-fetch from the bucket
   }
 
   async function handleDeleteRecord() {
@@ -601,7 +662,7 @@ export default function StudentModal({ student, onClose, onSaved }) {
     );
   }
 
-  const photoSrc = photoPreview || data.photo_url;
+  const photoSrc = photoPreview || bucketPhoto;
 
   const studentView = createPortal(
     <div
@@ -650,7 +711,7 @@ export default function StudentModal({ student, onClose, onSaved }) {
               ].join(" ")}
             >
               <Pencil className="h-4 w-4" />
-              <span className="sr-only">{data.photo_url ? "Replace photo" : "Upload photo"}</span>
+              <span className="sr-only">{photoSrc ? "Replace photo" : "Upload photo"}</span>
               <input
                 type="file"
                 accept="image/*"

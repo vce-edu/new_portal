@@ -3,14 +3,12 @@ import { createPortal } from "react-dom";
 import { X, Plus, Trash2, Image as ImageIcon } from "lucide-react";
 import { TextField, Select } from "./Input.jsx";
 import Button from "./Button.jsx";
-import { supabase, secSupabase } from "../createClient";
+import { supabase } from "../createClient";
 import { useAuth } from "../context/AuthContext";
 import { useBranchFilter } from "../context/BranchFilterContext";
 import { useCloseOnEscape } from "../hooks/useCloseOnEscape";
 import { toTitleCase, formatBatchTime, formatRollNumber, combineBatchTime, splitBatchTime } from "../utils/formatting";
-
-// Bucket lives in the second ("sec") Supabase account/project, accessed via secSupabase.
-const PHOTO_BUCKET = "student-photos";
+import { uploadStudentPhoto } from "../utils/studentPhoto";
 
 const FIELDS = [
   { key: "roll_number", label: "Roll Number" },
@@ -52,10 +50,10 @@ function emptyRow(defaultBranch) {
   row.batch_time_from = "";
   row.batch_time_to = "";
   row.admission_date = todayISO(); // default to today; user can still change it
-  row.photo_url = "";
+  // The photo file is held here and uploaded on submit, once roll number and
+  // name are final, so it can be stored as "<roll>_<name>.<ext>".
+  row.photo_file = null;
   row.photo_preview = "";
-  row.photo_uploading = false;
-  row.photo_error = "";
   return row;
 }
 
@@ -131,6 +129,7 @@ export default function AddStudentModal({ onClose, onSaved }) {
     );
   }
 
+  // Only keeps the file and a local preview; the upload happens on submit.
   function handlePhotoChange(index, file) {
     if (!file) return;
 
@@ -140,40 +139,8 @@ export default function AddStudentModal({ onClose, onSaved }) {
       prev.map((row, i) => {
         if (i !== index) return row;
         if (row.photo_preview) URL.revokeObjectURL(row.photo_preview);
-        return { ...row, photo_preview: previewUrl, photo_uploading: true, photo_error: "" };
+        return { ...row, photo_file: file, photo_preview: previewUrl };
       })
-    );
-
-    uploadPhoto(index, file);
-  }
-
-  async function uploadPhoto(index, file) {
-    const ext = file.name.split(".").pop();
-    const path = `${crypto.randomUUID()}.${ext}`;
-
-    const { error: uploadError } = await secSupabase.storage
-      .from(PHOTO_BUCKET)
-      .upload(path, file, {
-        cacheControl: "3600",
-        upsert: false,
-        contentType: file.type || "image/jpeg",
-      });
-
-    if (uploadError) {
-      setRows((prev) =>
-        prev.map((row, i) =>
-          i === index ? { ...row, photo_uploading: false, photo_error: uploadError.message } : row
-        )
-      );
-      return;
-    }
-
-    const { data } = secSupabase.storage.from(PHOTO_BUCKET).getPublicUrl(path);
-
-    setRows((prev) =>
-      prev.map((row, i) =>
-        i === index ? { ...row, photo_url: data.publicUrl, photo_uploading: false, photo_error: "" } : row
-      )
     );
   }
 
@@ -204,6 +171,7 @@ export default function AddStudentModal({ onClose, onSaved }) {
 
   async function handleSubmit(e) {
     e.preventDefault();
+    if (saving) return;
     setError("");
 
     const invalid = rows.some((r) => !r.roll_number || !r.student_name || !r.branch);
@@ -212,15 +180,11 @@ export default function AddStudentModal({ onClose, onSaved }) {
       return;
     }
 
-    if (rows.some((r) => r.photo_uploading)) {
-      setError("Please wait for photo uploads to finish before saving.");
-      return;
-    }
-
     const payloads = rows.map((row) => {
-      const { photo_preview, photo_uploading, photo_error, batch_time_from, batch_time_to, ...rest } = row;
+      const { photo_file, photo_preview, batch_time_from, batch_time_to, ...rest } = row;
       return {
         ...rest,
+        photo_url: "", // photos live in the bucket, looked up by roll number
         duration: formatDuration(rest.duration), // covers Enter-to-submit without leaving the field
         batch_time: combineBatchTime(formatBatchTime(batch_time_from), formatBatchTime(batch_time_to)),
       };
@@ -232,6 +196,25 @@ export default function AddStudentModal({ onClose, onSaved }) {
       payloads.map((payload) => supabase.rpc("manage_student", { action: "insert", payload }))
     );
 
+    // Upload photos only for students that were actually saved.
+    const photoFailures = [];
+
+    await Promise.all(
+      rows.map(async (row, i) => {
+        if (results[i].error || !row.photo_file) return;
+        try {
+          await uploadStudentPhoto(
+            row.photo_file,
+            payloads[i].roll_number,
+            payloads[i].student_name
+          );
+        } catch (err) {
+          console.error("Photo upload failed:", err);
+          photoFailures.push(`${payloads[i].student_name} (${payloads[i].roll_number})`);
+        }
+      })
+    );
+
     setSaving(false);
 
     const failed = results.filter((r) => r.error);
@@ -241,6 +224,15 @@ export default function AddStudentModal({ onClose, onSaved }) {
     }
 
     onSaved();
+
+    if (photoFailures.length > 0) {
+      alert(
+        `Students were saved, but the photo couldn't be uploaded for:\n${photoFailures.join(
+          "\n"
+        )}\n\nYou can upload it from the student's profile.`
+      );
+    }
+
     onClose();
   }
 
@@ -287,9 +279,9 @@ export default function AddStudentModal({ onClose, onSaved }) {
 
               <div className="mb-4 flex items-center gap-4">
                 <div className="flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-border bg-primaryLight/40">
-                  {row.photo_preview || row.photo_url ? (
+                  {row.photo_preview ? (
                     <img
-                      src={row.photo_preview || row.photo_url}
+                      src={row.photo_preview}
                       alt="Student"
                       className="h-full w-full object-cover"
                     />
@@ -299,16 +291,18 @@ export default function AddStudentModal({ onClose, onSaved }) {
                 </div>
                 <div>
                   <label className="cursor-pointer text-sm font-medium text-primary transition-colors hover:text-primaryDark">
-                    {row.photo_uploading ? "Uploading..." : row.photo_url ? "Replace photo" : "Upload photo"}
+                    {row.photo_preview ? "Replace photo" : "Upload photo"}
                     <input
                       type="file"
                       accept="image/*"
                       className="hidden"
-                      disabled={row.photo_uploading}
-                      onChange={(e) => handlePhotoChange(index, e.target.files?.[0])}
+                      disabled={saving}
+                      onChange={(e) => {
+                        handlePhotoChange(index, e.target.files?.[0]);
+                        e.target.value = "";
+                      }}
                     />
                   </label>
-                  {row.photo_error && <p className="mt-1 text-xs text-red-600">{row.photo_error}</p>}
                 </div>
               </div>
 
@@ -406,7 +400,7 @@ export default function AddStudentModal({ onClose, onSaved }) {
             type="submit"
             className="w-full"
             loading={saving}
-            disabled={saving || rows.some((r) => r.photo_uploading)}
+            disabled={saving}
           >
             {rows.length > 1 ? `Add ${rows.length} students` : "Add student"}
           </Button>

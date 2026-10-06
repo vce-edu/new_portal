@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 import { TextField } from "./Input.jsx";
@@ -12,6 +12,18 @@ function studentRollNumber(branch, rollNumber) {
   const initial = String(branch || "").trim().charAt(0).toLowerCase();
   return `${initial}_${rollNumber}`;
 }
+
+// "6" / "6 months" / "6m" -> "6 Months"; anything else is left as typed
+// (same rule AddStudentModal uses)
+function formatDuration(value) {
+  const m = String(value || "").trim().match(/^(\d+)\s*(months?|mon|m)?$/i);
+  if (!m) return String(value || "").trim();
+  const n = Number(m[1]);
+  return `${n} ${n === 1 ? "Month" : "Months"}`;
+}
+
+// AddStudentModal stores these fields in upper case, so do the same here
+const upper = (v) => String(v || "").trim().toUpperCase();
 
 // Local date as YYYY-MM-DD (toISOString would use UTC and can be a day behind in India)
 const todayLocal = () => new Date().toLocaleDateString("en-CA");
@@ -30,8 +42,14 @@ function Info({ label, value }) {
  * Everything the applicant record already has is copied automatically;
  * course, duration, fee, batch time and admission date are asked for here.
  *
+ * The students table can't be written to directly, so this goes through the
+ * same manage_student RPC that AddStudentModal uses.
+ *
  * applicant: a row from get_scholarship_applicants
- * onDone(studentRollNumber): called after a successful copy
+ * After a successful copy the applicant is also marked confirmed (via the
+ * manage_scholarship_applicant RPC).
+ *
+ * onDone(studentRollNumber, { confirmed, confirmError }): called after a successful copy
  */
 export default function TransferToStudentModal({ applicant, onClose, onDone }) {
   const rollNumber = studentRollNumber(applicant.exam_branch, applicant.roll_number);
@@ -45,25 +63,10 @@ export default function TransferToStudentModal({ applicant, onClose, onDone }) {
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  // Set when the RPC reports a duplicate roll number
   const [alreadyExists, setAlreadyExists] = useState(false);
 
   useCloseOnEscape(onClose);
-
-  // Warn up front if this applicant was already copied
-  useEffect(() => {
-    let cancelled = false;
-    supabase
-      .from("students")
-      .select("id")
-      .eq("roll_number", rollNumber)
-      .maybeSingle()
-      .then(({ data }) => {
-        if (!cancelled && data) setAlreadyExists(true);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [rollNumber]);
 
   const set = (key) => (e) => setForm((f) => ({ ...f, [key]: e.target.value }));
 
@@ -71,8 +74,8 @@ export default function TransferToStudentModal({ applicant, onClose, onDone }) {
     e.preventDefault();
     setError("");
 
-    const course = form.course.trim();
-    const duration = form.duration.trim();
+    const course = upper(form.course);
+    const duration = formatDuration(form.duration);
     const batchTime = form.batch_time.trim();
     const fee = Number(form.fee_per_month);
 
@@ -90,36 +93,57 @@ export default function TransferToStudentModal({ applicant, onClose, onDone }) {
     }
 
     setSaving(true);
-    const { error } = await supabase.from("students").insert({
-      roll_number: rollNumber,
-      student_name: applicant.student_name,
-      father_name: applicant.father_name,
-      mother_name: applicant.mother_name,
-      address: applicant.address,
-      phone_number: applicant.mobile_number,
-      branch: applicant.exam_branch,
-      photo_url: applicant.photo_url || null,
-      course,
-      duration,
-      fee_per_month: fee,
-      batch_time: batchTime,
-      admission_date: form.admission_date,
-      status: "live",
-      diploma_uploaded: false,
+    const { error } = await supabase.rpc("manage_student", {
+      action: "insert",
+      payload: {
+        roll_number: rollNumber,
+        student_name: upper(applicant.student_name),
+        father_name: upper(applicant.father_name),
+        mother_name: upper(applicant.mother_name),
+        address: upper(applicant.address),
+        phone_number: applicant.mobile_number,
+        branch: applicant.exam_branch,
+        photo_url: applicant.photo_url || "",
+        course,
+        duration,
+        fee_per_month: fee,
+        batch_time: batchTime,
+        admission_date: form.admission_date,
+      },
     });
     setSaving(false);
 
     if (error) {
-      if (error.code === "23505") {
+      const isDuplicate =
+        error.code === "23505" || /duplicate|already exists/i.test(error.message || "");
+      if (isDuplicate) {
         setAlreadyExists(true);
-        setError(`A student with roll number ${rollNumber} already exists. This applicant may already be transferred.`);
+        setError(
+          `A student with roll number ${rollNumber} already exists. This applicant may already be transferred.`
+        );
       } else {
         setError(error.message || "Couldn't copy this applicant to the students table.");
       }
       return;
     }
 
-    onDone?.(rollNumber);
+    // The student now exists, so mark the applicant as confirmed. If this step
+    // fails the transfer itself still succeeded, so report it instead of erroring.
+    let confirmed = true;
+    let confirmError = "";
+    if (!applicant.confirmed) {
+      const { error: confirmErr } = await supabase.rpc("manage_scholarship_applicant", {
+        action: "update",
+        p_roll_number: applicant.roll_number,
+        payload: { confirmed: true },
+      });
+      if (confirmErr) {
+        confirmed = false;
+        confirmError = confirmErr.message || "Couldn't mark the applicant as confirmed.";
+      }
+    }
+
+    onDone?.(rollNumber, { confirmed, confirmError });
     onClose();
   }
 
@@ -150,12 +174,6 @@ export default function TransferToStudentModal({ applicant, onClose, onDone }) {
             </div>
           )}
 
-          {alreadyExists && !error && (
-            <div className="rounded-md border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-sm text-amber-700">
-              A student with roll number {rollNumber} already exists, so this applicant looks already transferred.
-            </div>
-          )}
-
           <div>
             <p className="mb-3 text-sm font-medium text-text">Copied from the applicant</p>
             <div className="grid grid-cols-1 gap-x-6 gap-y-3 rounded-lg border border-border bg-primaryLight/30 p-4 sm:grid-cols-2">
@@ -180,7 +198,7 @@ export default function TransferToStudentModal({ applicant, onClose, onDone }) {
                 label="Duration"
                 value={form.duration}
                 onChange={set("duration")}
-                placeholder="e.g. 6 months"
+                placeholder="e.g. 6"
               />
               <TextField
                 label="Fee per Month"

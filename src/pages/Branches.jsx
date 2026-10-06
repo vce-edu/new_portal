@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
-import { Users, UserX, Wallet, UserCog, Trash2 } from "lucide-react";
+import { Users, UserX, Wallet, UserCog, Trash2, Pencil, Plus } from "lucide-react";
 import Dock from "../components/Dock";
 import Button from "../components/Button";
 import { supabase } from "../createClient";
 import AddStaffModal from "../components/AddStaffModal";
 import DeleteStaffModal from "../components/DeleteStaffModal";
+import BranchModal from "../components/BranchModal";
+import { useAuth } from "../context/AuthContext";
 import { toTitleCase } from "../utils/formatting";
 
 const fmtINR = (n) => `₹${Math.round(Number(n) || 0).toLocaleString("en-IN")}`;
@@ -190,14 +192,27 @@ function StaffTable({ staff, canDelete, onDelete }) {
   );
 }
 
-function BranchSection({ b, periodText, onAddStaff, canDelete, onDeleteStaff }) {
+function BranchSection({ b, periodText, onAddStaff, canDelete, onDeleteStaff, isOwner, onEditBranch }) {
   const staff = Array.isArray(b.staff) ? b.staff : [];
   return (
     <section>
       <div className="flex items-start justify-between gap-4">
         <div>
           <h2 className="font-display text-xl text-secondary">{toTitleCase(b.branch_name)}</h2>
-          <p className="mt-1 text-sm text-muted">{b.branch_address || "No address added"}</p>
+          <p className="mt-1 flex items-center gap-1.5 text-sm text-muted">
+            {b.branch_address || "No address added"}
+            {isOwner && (
+              <button
+                type="button"
+                onClick={() => onEditBranch(b)}
+                aria-label={`Edit address for ${toTitleCase(b.branch_name)}`}
+                title="Edit address"
+                className="rounded-full p-1 text-muted transition-colors hover:bg-primaryLight hover:text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+              >
+                <Pencil className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </p>
         </div>
         <Button onClick={() => onAddStaff(b)}>Add staff</Button>
       </div>
@@ -231,6 +246,9 @@ export default function Branches() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [addTo, setAddTo] = useState(null); // branch row the Add staff dialog is open for
+  const { roleLevel } = useAuth();
+  const isOwner = roleLevel >= 3;
+  const [branchModal, setBranchModal] = useState(null); // { branch } -> edit address, {} -> new branch
   const [deleting, setDeleting] = useState(null); // staff row the Delete dialog is open for
   const [reloadKey, setReloadKey] = useState(0);
   const [myId, setMyId] = useState(null);
@@ -293,7 +311,17 @@ export default function Branches() {
                 {loading ? "Loading..." : `${branches.length} branch${branches.length === 1 ? "" : "es"} · ${periodText}`}
               </p>
             </div>
-            <DateRange value={range} onChange={setRange} />
+            <div className="flex flex-wrap items-center gap-3">
+              <DateRange value={range} onChange={setRange} />
+              {isOwner && (
+                <Button onClick={() => setBranchModal({})}>
+                  <span className="flex items-center gap-1.5">
+                    <Plus className="h-4 w-4" />
+                    Add branch
+                  </span>
+                </Button>
+              )}
+            </div>
           </div>
 
           {error && (
@@ -306,7 +334,7 @@ export default function Branches() {
             <Skeleton />
           ) : branches.length === 0 && !error ? (
             <div className="flex h-40 items-center justify-center rounded-xl border border-dashed border-border bg-background text-sm text-muted">
-              You don't have access to any branch reports.
+              No branches to show yet.
             </div>
           ) : (
             <div className="space-y-12">
@@ -314,12 +342,25 @@ export default function Branches() {
                 <BranchSection key={b.branch_name} b={b} periodText={periodText} onAddStaff={setAddTo}
                   canDelete={canDelete}
                   onDeleteStaff={setDeleting}
+                  isOwner={isOwner}
+                  onEditBranch={(row) => setBranchModal({ branch: row })}
                 />
               ))}
             </div>
           )}
         </div>
       </main>
+
+      {branchModal && (
+        <BranchModal
+          branch={branchModal.branch}
+          onClose={() => setBranchModal(null)}
+          onSaved={() => {
+            setBranchModal(null);
+            setReloadKey((k) => k + 1);
+          }}
+        />
+      )}
 
       {deleting && (
         <DeleteStaffModal

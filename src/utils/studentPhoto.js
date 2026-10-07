@@ -42,3 +42,49 @@ export async function downloadStudentPhoto(rollNumber) {
   if (error || !blob) throw error || new Error("Empty photo");
   return { blob, name: file.name };
 }
+
+// Uploads a photo as "<roll>_<name>.<ext>" and removes any older photo for the same roll.
+// Throws on failure. Returns the stored file name.
+export async function uploadStudentPhoto(file, rollNumber, studentName) {
+  const roll = cleanKeyPart(rollNumber);
+  const name = cleanKeyPart(studentName);
+
+  if (!roll) throw new Error("Roll number is required to upload a photo.");
+
+  // Normalise extension to jpg / jpeg / png.
+  let ext = (file.name.split(".").pop() || "").toLowerCase();
+  if (!["jpg", "jpeg", "png"].includes(ext)) {
+    ext = file.type === "image/png" ? "png" : "jpg";
+  }
+
+  const path = `${roll}_${name}.${ext}`;
+  const prefix = `${roll}_`;
+
+  // Remove older photo(s) for this roll so the lookup never finds a stale one.
+  try {
+    const { data: existing } = await secSupabase.storage
+      .from(PHOTO_BUCKET)
+      .list("", { search: prefix, limit: 100 });
+
+    const stale = (existing || [])
+      .filter((f) => f.name.startsWith(prefix) && f.name !== path)
+      .map((f) => f.name);
+
+    if (stale.length) {
+      await secSupabase.storage.from(PHOTO_BUCKET).remove(stale);
+    }
+  } catch (err) {
+    console.error("Couldn't clean old photos:", err);
+  }
+
+  const { error } = await secSupabase.storage
+    .from(PHOTO_BUCKET)
+    .upload(path, file, {
+      cacheControl: "3600",
+      upsert: true,
+      contentType: file.type || (ext === "png" ? "image/png" : "image/jpeg"),
+    });
+
+  if (error) throw error;
+  return path;
+}

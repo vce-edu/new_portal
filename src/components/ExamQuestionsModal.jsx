@@ -4,6 +4,11 @@ import { supabase } from "../createClient";
 import Button from "./Button";
 import { useCloseOnEscape } from "../hooks/useCloseOnEscape";
 
+// real line breaks -> "/n" (what the exam frontend understands)
+const toStored = (s) => (s || "").replace(/\r?\n/g, "/n");
+// "/n" -> real line breaks (for editing the question and for previewing)
+const fromStored = (s) => (s || "").split("/n").join("\n");
+
 const emptyDraft = () => ({
   question_id: null, // set when editing an already-saved question
   pendingIndex: null, // set when editing a question that's staged but not saved yet
@@ -103,7 +108,8 @@ export default function ExamQuestionsModal({ exam, readOnly = false, onClose, on
     if (filled.length < 2) return setError("Add at least 2 options."), null;
     if (filled.filter((o) => o.is_correct).length !== 1) return setError("Pick the correct option."), null;
     return {
-      question_text: draft.question_text.trim(),
+      // Enter presses (real line breaks) are saved as "/n"
+      question_text: toStored(draft.question_text.trim()),
       marks: Number(draft.marks) || 0,
       options: filled.map((o) => ({ option_text: o.option_text.trim(), is_correct: !!o.is_correct })),
     };
@@ -209,6 +215,17 @@ export default function ExamQuestionsModal({ exam, readOnly = false, onClose, on
     });
   }
 
+  // Enter inside an option field inserts a visible "/n" (Ctrl/⌘ + Enter still submits the form)
+  function insertBreak(e, index) {
+    if (e.key !== "Enter" || e.ctrlKey || e.metaKey) return;
+    e.preventDefault();
+    const el = e.target;
+    const start = el.selectionStart;
+    const end = el.selectionEnd;
+    updateOption(index, { option_text: el.value.slice(0, start) + "/n" + el.value.slice(end) });
+    requestAnimationFrame(() => el.setSelectionRange(start + 2, start + 2));
+  }
+
   const countLabel = `${totalQuestions} of ${exam.total_questions} questions`;
   const marksMismatch =
     exam.total_score != null && !loading && totalQuestions > 0 && totalMarks !== exam.total_score;
@@ -284,7 +301,7 @@ export default function ExamQuestionsModal({ exam, readOnly = false, onClose, on
                               setDraft({
                                 ...emptyDraft(),
                                 question_id: q.question_id,
-                                question_text: q.question_text,
+                                question_text: fromStored(q.question_text),
                                 marks: q.marks,
                                 options: q.options.map((o) => ({
                                   option_text: o.option_text,
@@ -333,7 +350,7 @@ export default function ExamQuestionsModal({ exam, readOnly = false, onClose, on
                             setDraft({
                               ...emptyDraft(),
                               pendingIndex: i,
-                              question_text: q.question_text,
+                              question_text: fromStored(q.question_text),
                               marks: q.marks,
                               options: q.options.map((o) => ({ ...o })),
                             });
@@ -384,6 +401,7 @@ export default function ExamQuestionsModal({ exam, readOnly = false, onClose, on
                 onChange={(e) => setDraft({ ...draft, question_text: e.target.value })}
                 className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-text focus:border-primary focus:outline-none"
               />
+              <p className="mt-1 text-xs text-muted">Press Enter for a new line (saved as /n).</p>
 
               <div className="mt-4 mb-1">
                 <span className="text-xs font-medium text-muted">Options — select the correct one</span>
@@ -403,6 +421,7 @@ export default function ExamQuestionsModal({ exam, readOnly = false, onClose, on
                       type="text"
                       value={o.option_text}
                       onChange={(e) => updateOption(i, { option_text: e.target.value })}
+                      onKeyDown={(e) => insertBreak(e, i)}
                       placeholder={`Option ${i + 1}`}
                       className="flex-1 rounded-md border border-border bg-background px-3 py-2 text-sm text-text focus:border-primary focus:outline-none"
                     />
@@ -519,7 +538,7 @@ function QuestionCard({ number, question, actions, staged = false }) {
           {number}
         </span>
         <div className="min-w-0 flex-1">
-          <p className="whitespace-pre-wrap text-sm font-medium text-text">{question.question_text}</p>
+          <p className="whitespace-pre-wrap text-sm font-medium text-text">{fromStored(question.question_text)}</p>
           <ul className="mt-2 space-y-1">
             {question.options.map((o) => (
               <li
@@ -527,7 +546,7 @@ function QuestionCard({ number, question, actions, staged = false }) {
                 className={`flex items-center gap-2 text-sm ${o.is_correct ? "font-medium text-green-600" : "text-muted"}`}
               >
                 {o.is_correct ? <Check className="h-3.5 w-3.5 shrink-0" /> : <span className="h-3.5 w-3.5 shrink-0" />}
-                <span>{o.option_text}</span>
+                <span className="whitespace-pre-wrap">{fromStored(o.option_text)}</span>
               </li>
             ))}
           </ul>

@@ -4,6 +4,7 @@ import {
   RotateCcw,
   CreditCard,
   Trash2,
+  Pencil,
   Printer,
   UserCheck,
   UserX,
@@ -23,6 +24,7 @@ export default function Table({
   data,
   emptyMessage = "No records found.",
   onView,
+  onEdit,
   onPay,
   onMoveToBreak,
   onRestore,
@@ -49,6 +51,7 @@ export default function Table({
       onTogglePresent ||
       onPrint ||
       onTransfer ||
+      onEdit ||
       onDelete
   );
   const showPagination = totalCount != null && onPageChange;
@@ -412,6 +415,20 @@ export default function Table({
                                   className={actionBtn}
                                 >
                                   <ArrowLeftRight className="h-4 w-4" strokeWidth={2} />
+                                </button>
+                              )}
+                              {onEdit && (
+                                <button
+                                  type="button"
+                                  aria-label="Edit"
+                                  title="Edit"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    onEdit(row);
+                                  }}
+                                  className={actionBtn}
+                                >
+                                  <Pencil className="h-4 w-4" strokeWidth={2} />
                                 </button>
                               )}
                               {onDelete && (

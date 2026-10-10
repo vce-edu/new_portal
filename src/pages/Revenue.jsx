@@ -46,6 +46,9 @@ const EXPENSE_SORT_KEY = "spent_on";
 const EXPENSE_MANAGE_RPC = "manage_expense";
 const EXPENSE_ID_PARAM = "expense_id";
 
+// Pick the address from a transaction row (adjust to your real column name)
+const getTxAddress = (t) => t.address ?? t.student_address ?? t.payee_address ?? "";
+
 // Normalise a raw expense row into { amount, date, category }
 function normalizeExpense(row) {
   return {
@@ -55,6 +58,7 @@ function normalizeExpense(row) {
     description: row.description ?? row.note ?? row.notes ?? row.title ?? row.details ?? "",
     id: row.expense_id ?? row.id ?? null,
     branch: row.branch ?? "",
+    address: row.address ?? row.vendor_address ?? "",
   };
 }
 
@@ -860,13 +864,14 @@ export default function Revenue() {
     if (kind === "transactions") {
       downloadCSV(
         `transactions_${stem}.csv`,
-        ["Receipt No", "Date", "Student Name", "Roll Number", "Payee", "Branch", "Amount Paid"],
+        ["Receipt No", "Date", "Student Name", "Roll Number", "Payee", "Address", "Branch", "Amount Paid"],
         model.txList.map((t) => [
           t.receipt_no,
           dayKey(t._date),
           t.student_name,
           t.roll_number,
           t.payee,
+          getTxAddress(t),
           t.branch ? toTitleCase(t.branch) : "",
           t._amount,
         ])
@@ -874,11 +879,12 @@ export default function Revenue() {
     } else if (kind === "expenses") {
       downloadCSV(
         `expenses_${stem}.csv`,
-        ["Date", "Category", "Description", "Branch", "Amount"],
+        ["Date", "Category", "Description", "Address", "Branch", "Amount"],
         model.exList.map((e) => [
           dayKey(e.date),
           toTitleCase(String(e.category)) || "Other",
           e.description,
+          e.address,
           e.branch ? toTitleCase(e.branch) : "",
           e.amount,
         ])

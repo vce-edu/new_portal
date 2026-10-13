@@ -240,15 +240,21 @@ const printReceipt = (receipt) => {
   }, 250);
 };
 
-export default function AddTransactionModal({ onClose, onSaved, lockedStudent }) {
+export default function AddTransactionModal({ onClose, onSaved, lockedStudent, editTransaction }) {
   useCloseOnEscape(onClose);
 
+  // When editTransaction is passed, the modal updates that payment instead of inserting a new one.
+  const isEdit = Boolean(editTransaction);
+
   const [rollNumber, setRollNumber] = useState(lockedStudent?.roll_number || "");
-  const [receiptNo] = useState(generateReceiptNo);
-  const [paidOn, setPaidOn] = useState(getTodayDate);
-  const [amountPaid, setAmountPaid] = useState(
-    lockedStudent?.fee_per_month != null ? String(lockedStudent.fee_per_month) : ""
+  const [receiptNo] = useState(() => editTransaction?.receipt_no || generateReceiptNo());
+  const [paidOn, setPaidOn] = useState(() =>
+    editTransaction?.paid_on ? String(editTransaction.paid_on).slice(0, 10) : getTodayDate()
   );
+  const [amountPaid, setAmountPaid] = useState(() => {
+    if (editTransaction?.amount_paid != null) return String(editTransaction.amount_paid);
+    return lockedStudent?.fee_per_month != null ? String(lockedStudent.fee_per_month) : "";
+  });
   const [amountTouched, setAmountTouched] = useState(false);
 
   const [student, setStudent] = useState(lockedStudent || null);
@@ -325,23 +331,28 @@ export default function AddTransactionModal({ onClose, onSaved, lockedStudent })
       setError("Enter a valid roll number before saving.");
       return;
     }
-    if (!amountPaid) {
+    if (!amountPaid || Number(amountPaid) <= 0) {
       setError("Amount paid is required.");
       return;
     }
 
     setSaving(true);
 
-    const { error } = await supabase.rpc("manage_transaction", {
-      action: "insert",
-      payload: {
-        roll_number: student.roll_number,
-        receipt_no: receiptNo,
-        payee: student.father_name || "",
-        amount_paid: amountPaid,
-        paid_on: paidOn,
-      },
-    });
+    const payload = {
+      roll_number: student.roll_number,
+      receipt_no: receiptNo,
+      // keep the original payee when editing so the record stays consistent
+      payee: isEdit ? editTransaction.payee || "" : student.father_name || "",
+      amount_paid: amountPaid,
+      paid_on: paidOn,
+    };
+
+    const { error } = await supabase.rpc(
+      "manage_transaction",
+      isEdit
+        ? { action: "update", transaction_id: editTransaction.transaction_id, payload }
+        : { action: "insert", payload }
+    );
 
     setSaving(false);
 
@@ -401,17 +412,29 @@ export default function AddTransactionModal({ onClose, onSaved, lockedStudent })
     onSaved();
   }
 
+  const payeeShown = isEdit ? editTransaction.payee : student?.father_name;
+
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-secondary/40 backdrop-blur-sm p-6">
       <div className="w-full max-w-lg max-h-[85vh] overflow-y-auto rounded-2xl border border-border bg-background shadow-xl">
         <div className="flex items-center justify-between border-b border-border px-6 py-4">
           <div>
             <h2 className="font-display text-lg text-secondary">
-              {savedReceipt ? "Payment Successful!" : "Add Transaction"}
+              {savedReceipt
+                ? isEdit
+                  ? "Payment Updated!"
+                  : "Payment Successful!"
+                : isEdit
+                ? "Edit Transaction"
+                : "Add Transaction"}
             </h2>
             <p className="text-sm text-muted">
               {savedReceipt
-                ? "Transaction has been recorded successfully."
+                ? isEdit
+                  ? "Transaction has been updated successfully."
+                  : "Transaction has been recorded successfully."
+                : isEdit
+                ? "Update the amount or date of this payment."
                 : "Record a fee payment against a student."}
             </p>
           </div>
@@ -516,7 +539,7 @@ export default function AddTransactionModal({ onClose, onSaved, lockedStudent })
               </div>
               <div className="flex justify-between text-sm">
                 <span className="text-muted">Payee</span>
-                <span className="text-text">{student.father_name || "—"}</span>
+                <span className="text-text">{payeeShown || "—"}</span>
               </div>
             </div>
           )}
@@ -540,7 +563,7 @@ export default function AddTransactionModal({ onClose, onSaved, lockedStudent })
           />
 
           <Button type="submit" className="w-full" loading={saving} disabled={saving || !student}>
-            Add transaction
+            {isEdit ? "Save changes" : "Add transaction"}
           </Button>
         </form>
         )}

@@ -211,6 +211,8 @@ export default function StudentModal({ student, onClose, onSaved }) {
   const [txError, setTxError] = useState("");
   const [txLoaded, setTxLoaded] = useState(false);
   const [showAddTx, setShowAddTx] = useState(false);
+  // The transaction being edited (null when adding a new one).
+  const [editingTx, setEditingTx] = useState(null);
   // True from the moment "Add Transaction" is clicked until the transaction modal is closed.
   const [leavingForTx, setLeavingForTx] = useState(false);
 
@@ -285,10 +287,18 @@ export default function StudentModal({ student, onClose, onSaved }) {
     );
   }
 
+  // Same flow as adding, but the modal opens pre-filled with an existing payment.
+  function openEditTransaction(row) {
+    if (txFlowRef.current) return;
+    setEditingTx(row);
+    openAddTransaction();
+  }
+
   // Bring the profile back (on the Transaction history tab) once the transaction modal closes.
   function closeAddTransaction() {
     setShowAddTx(false);
     setLeavingForTx(false);
+    setEditingTx(null);
   }
 
   // Fade this modal out first, then open the diploma modal on its own.
@@ -862,7 +872,7 @@ export default function StudentModal({ student, onClose, onSaved }) {
               {/* Fee summary. Total Course / Expected So Far / Status come from
                   get_students() (data). Total Paid / Total Remain are computed
                   live from the transactions just fetched below, so they stay
-                  accurate immediately after adding or deleting a payment
+                  accurate immediately after adding, editing or deleting a payment
                   rather than waiting on a stale server snapshot. */}
               {(() => {
                 const totalCourse = data.total_course_amount;
@@ -959,12 +969,20 @@ export default function StudentModal({ student, onClose, onSaved }) {
                           {t.payee ? ` · Paid by ${t.payee}` : ""}
                         </p>
                       </div>
-                      <div className="flex shrink-0 items-center gap-3">
-                        <p className="font-medium text-secondary">
+                      <div className="flex shrink-0 items-center gap-1.5 sm:gap-3">
+                        <p className="mr-1 font-medium text-secondary">
                           {t.amount_paid != null
                             ? `₹${Number(t.amount_paid).toLocaleString("en-IN")}`
                             : "—"}
                         </p>
+                        <button
+                          type="button"
+                          onClick={() => openEditTransaction(t)}
+                          aria-label="Edit transaction"
+                          className="flex h-8 w-8 items-center justify-center rounded-full text-muted opacity-0 transition-all hover:bg-primaryLight hover:text-primary focus-visible:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100"
+                        >
+                          <Pencil className="h-4 w-4" />
+                        </button>
                         <button
                           type="button"
                           onClick={() => handleDeleteTransaction(t)}
@@ -1001,6 +1019,7 @@ export default function StudentModal({ student, onClose, onSaved }) {
               branch: data.branch,
               fee_per_month: data.fee_per_month,
             }}
+            editTransaction={editingTx}
             onClose={closeAddTransaction}
             onSaved={loadTransactions}
           />,

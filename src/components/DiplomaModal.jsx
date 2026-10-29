@@ -11,6 +11,7 @@ import {
   RefreshCw,
   ArrowLeft,
   Image as ImageIcon,
+  ChevronDown,
 } from "lucide-react";
 import { TextField } from "./Input.jsx";
 import { supabase, secSupabase } from "../createClient";
@@ -28,6 +29,38 @@ import {
 
 const PHOTO_BUCKET = "student-photos";
 const EXIT_MS = 220;
+
+const SUBJECT_OPTIONS = [
+  "MS Word 2019",
+  "MS Excel 2019",
+  "MS PowerPoint 2019",
+  "Photoshop",
+  "CorelDRAW",
+  "Tally 9",
+  "Tally Prime",
+  "Busy",
+  "Marg",
+  "Python",
+  "Java",
+  "C",
+  "C++",
+  "HTML",
+  "CSS",
+  "JavaScript",
+  "MERN Stack",
+  "MongoDB",
+  "SQL",
+  "Figma",
+  "Canva",
+  "Git and GitHub",
+  "Hindi Typing",
+  "English Typing",
+  "LibreOffice Writer",
+  "LibreOffice Calc",
+  "LibreOffice Impress",
+  "IOT",
+  "AI",
+];
 
 const STEPS = [
   { id: "fee", label: "Fee check" },
@@ -195,6 +228,174 @@ function ErrorBox({ children }) {
 const cellInput =
   "w-full rounded-lg border border-border bg-background px-2 py-1.5 text-sm text-text focus:outline-none focus:ring-2 focus:ring-primary/40";
 
+// Type-to-filter combobox. Whatever is typed is the value, so a subject that
+// isn't in SUBJECT_OPTIONS can simply be typed in. The list is rendered in a
+// portal so the table's overflow-x-auto wrapper can't clip it.
+function SubjectCombobox({ value, onChange }) {
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(-1);
+  const [pos, setPos] = useState(null);
+  const inputRef = useRef(null);
+  const listRef = useRef(null);
+
+  const text = value || "";
+  const query = text.trim().toLowerCase();
+  const exact = SUBJECT_OPTIONS.some((n) => n.toLowerCase() === query);
+  // Show the whole list when empty or when the value is already a listed subject,
+  // so the user can still switch to a different one.
+  const matches =
+    !query || exact
+      ? SUBJECT_OPTIONS
+      : SUBJECT_OPTIONS.filter((n) => n.toLowerCase().includes(query));
+
+  function measure() {
+    const r = inputRef.current?.getBoundingClientRect();
+    if (!r) return;
+    const spaceBelow = window.innerHeight - r.bottom;
+    const up = spaceBelow < 200 && r.top > spaceBelow;
+    setPos({
+      left: r.left,
+      width: r.width,
+      maxHeight: Math.max(120, Math.min(240, (up ? r.top : spaceBelow) - 12)),
+      ...(up ? { bottom: window.innerHeight - r.top + 4 } : { top: r.bottom + 4 }),
+    });
+  }
+
+  useEffect(() => {
+    if (!open) return;
+    measure();
+    window.addEventListener("resize", measure);
+    window.addEventListener("scroll", measure, true);
+    return () => {
+      window.removeEventListener("resize", measure);
+      window.removeEventListener("scroll", measure, true);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open || active < 0) return;
+    listRef.current?.children[active]?.scrollIntoView({ block: "nearest" });
+  }, [active, open]);
+
+  function choose(name) {
+    onChange(name);
+    setOpen(false);
+    setActive(-1);
+  }
+
+  function handleKeyDown(e) {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      if (!open) setOpen(true);
+      setActive((i) => Math.min(i + 1, matches.length - 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      if (!open) setOpen(true);
+      setActive((i) => Math.max(i - 1, 0));
+    } else if (e.key === "Enter") {
+      if (open) {
+        e.preventDefault();
+        if (active >= 0 && matches[active]) choose(matches[active]);
+        else setOpen(false);
+      }
+    } else if (e.key === "Escape") {
+      // Close just the list, not the whole modal.
+      if (open) {
+        e.stopPropagation();
+        setOpen(false);
+      }
+    }
+  }
+
+  return (
+    <div className="relative">
+      <input
+        ref={inputRef}
+        className={`${cellInput} pr-7`}
+        value={text}
+        onChange={(e) => {
+          onChange(e.target.value);
+          setOpen(true);
+          setActive(-1);
+        }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setOpen(false)}
+        onKeyDown={handleKeyDown}
+        placeholder="Type or select subject"
+        aria-label="Subject name"
+        role="combobox"
+        aria-expanded={open}
+        aria-autocomplete="list"
+        autoComplete="off"
+      />
+      <button
+        type="button"
+        tabIndex={-1}
+        aria-label="Show subjects"
+        onMouseDown={(e) => {
+          e.preventDefault();
+          if (open) {
+            setOpen(false);
+          } else {
+            inputRef.current?.focus();
+            setOpen(true);
+          }
+        }}
+        className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted hover:text-primary"
+      >
+        <ChevronDown className="h-4 w-4" />
+      </button>
+
+      {open &&
+        pos &&
+        createPortal(
+          <ul
+            ref={listRef}
+            role="listbox"
+            // keep focus in the input while clicking or dragging the scrollbar
+            onMouseDown={(e) => e.preventDefault()}
+            style={{
+              position: "fixed",
+              left: pos.left,
+              width: pos.width,
+              top: pos.top,
+              bottom: pos.bottom,
+              maxHeight: pos.maxHeight,
+            }}
+            className="z-[80] overflow-y-auto rounded-lg border border-border bg-background py-1 shadow-lg"
+          >
+            {matches.length === 0 ? (
+              <li className="px-3 py-2 text-xs text-muted">
+                No match. “{text.trim()}” will be used as typed.
+              </li>
+            ) : (
+              matches.map((name, i) => (
+                <li
+                  key={name}
+                  role="option"
+                  aria-selected={name === text}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    choose(name);
+                  }}
+                  onMouseEnter={() => setActive(i)}
+                  className={[
+                    "cursor-pointer px-3 py-1.5 text-sm",
+                    i === active ? "bg-primaryLight text-primary" : "text-text",
+                    name === text ? "font-medium" : "",
+                  ].join(" ")}
+                >
+                  {name}
+                </li>
+              ))
+            )}
+          </ul>,
+          document.body
+        )}
+    </div>
+  );
+}
+
 function SubjectsTable({ subjects, onChange, onAdd, onRemove }) {
   const update = (id, field, value) => {
     onChange(
@@ -206,7 +407,7 @@ function SubjectsTable({ subjects, onChange, onAdd, onRemove }) {
     );
   };
 
-  const cols = "grid-cols-[1.4fr_2fr_0.8fr_0.9fr_32px]";
+  const cols = "grid-cols-[1.8fr_1.6fr_0.8fr_0.9fr_32px]";
 
   return (
     <Section title="Subjects and marks">
@@ -222,12 +423,9 @@ function SubjectsTable({ subjects, onChange, onAdd, onRemove }) {
 
           {subjects.map((s) => (
             <div key={s.id} className={`grid ${cols} items-center gap-2 border-t border-border px-3 py-2`}>
-              <input
-                className={cellInput}
+              <SubjectCombobox
                 value={s.subject}
-                onChange={(e) => update(s.id, "subject", e.target.value)}
-                placeholder="e.g. MS Excel"
-                aria-label="Subject name"
+                onChange={(v) => update(s.id, "subject", v)}
               />
               <input
                 className={cellInput}

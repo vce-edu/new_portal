@@ -499,15 +499,17 @@ function TotalsSummary({ totals }) {
 /*
   Props
   - student:    the student object shown in the profile (same shape as StudentModal's `data`)
+  - isUpdate:   true when a diploma already exists. Skips the fee check, loads the
+                details saved next to the current diploma, and overwrites it on upload.
   - onClose:    called after the exit animation
   - onUploaded: optional, called once the PDF has been stored
 */
-export default function DiplomaModal({ student, onClose, onUploaded }) {
-  const [step, setStep] = useState("fee");
+export default function DiplomaModal({ student, isUpdate = false, onClose, onUploaded }) {
+  const [step, setStep] = useState(isUpdate ? "details" : "fee");
 
   // Fee check
   const [feeStatus, setFeeStatus] = useState(null); // "pending" | "not-found" | "up-to-date"
-  const [feeLoading, setFeeLoading] = useState(true);
+  const [feeLoading, setFeeLoading] = useState(!isUpdate);
 
   // Details — pre-filled from the profile, anything empty gets flagged
   const [studentName, setStudentName] = useState(student.student_name || "");
@@ -519,10 +521,14 @@ export default function DiplomaModal({ student, onClose, onUploaded }) {
   );
   const [courseDuration, setCourseDuration] = useState(student.duration || "");
   const [marksheetNo, setMarksheetNo] = useState("");
-  const [certificateNo] = useState(generateCertificateNo);
+  const [certificateNo, setCertificateNo] = useState(generateCertificateNo);
   const [marksheetYear, setMarksheetYear] = useState(String(new Date().getFullYear()));
   const [subjects, setSubjects] = useState(() => [makeEmptySubject()]);
   const [detailsError, setDetailsError] = useState("");
+
+  // Update mode: details saved next to the current diploma
+  const [detailsLoading, setDetailsLoading] = useState(isUpdate);
+  const [savedFound, setSavedFound] = useState(false);
 
   // Institute address for this student's branch — same lookup AddTransactionModal
   // uses for the printed fee receipt.
@@ -541,7 +547,6 @@ export default function DiplomaModal({ student, onClose, onUploaded }) {
   const [uploading, setUploading] = useState(false);
   const [uploadResult, setUploadResult] = useState(null);
   const [uploadError, setUploadError] = useState("");
-  const [canOverwrite, setCanOverwrite] = useState(false);
 
   // Enter / exit animation
   const [entered, setEntered] = useState(false);
@@ -587,8 +592,13 @@ export default function DiplomaModal({ student, onClose, onUploaded }) {
 
   useCloseOnEscape(() => requestClose());
 
-  // Fee check on open
+  // Fee check on open (skipped when updating an existing diploma)
   useEffect(() => {
+    if (isUpdate) {
+      setFeeLoading(false);
+      return;
+    }
+
     let cancelled = false;
 
     (async () => {
@@ -668,6 +678,54 @@ export default function DiplomaModal({ student, onClose, onUploaded }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Update mode: load the details saved alongside the current diploma
+  useEffect(() => {
+    if (!isUpdate) return;
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const path = generatePath(student.roll_number);
+        const { data: blob, error } = await secSupabase.storage
+          .from(BUCKET)
+          .download(`${path}.json`);
+        if (error) throw error;
+
+        const saved = JSON.parse(await blob.text());
+        if (cancelled) return;
+
+        if (saved.studentName != null) setStudentName(saved.studentName);
+        if (saved.fatherName != null) setFatherName(saved.fatherName);
+        if (saved.motherName != null) setMotherName(saved.motherName);
+        if (saved.course != null) setCourse(saved.course);
+        if (saved.courseFrom != null) setCourseFrom(saved.courseFrom);
+        if (saved.courseDuration != null) setCourseDuration(saved.courseDuration);
+        if (saved.marksheetNo != null) setMarksheetNo(saved.marksheetNo);
+        if (saved.certificateNo) setCertificateNo(saved.certificateNo);
+        if (saved.marksheetYear != null) setMarksheetYear(saved.marksheetYear);
+        if (Array.isArray(saved.subjects) && saved.subjects.length) {
+          setSubjects(
+            saved.subjects.map((s) => {
+              const base = makeEmptySubject(); // fresh unique id
+              return { ...base, ...s, id: base.id };
+            })
+          );
+        }
+        setSavedFound(true);
+      } catch (err) {
+        console.error("No saved diploma details:", err);
+        if (!cancelled) setSavedFound(false);
+      } finally {
+        if (!cancelled) setDetailsLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   function handlePhotoChange(e) {
     const file = e.target.files?.[0];
     e.target.value = "";
@@ -698,7 +756,6 @@ export default function DiplomaModal({ student, onClose, onUploaded }) {
   function handleBackToDetails() {
     clearPreview();
     setUploadError("");
-    setCanOverwrite(false);
     setGenerateError("");
     setStep("details");
   }
@@ -707,7 +764,6 @@ export default function DiplomaModal({ student, onClose, onUploaded }) {
     setGenerating(true);
     setGenerateError("");
     setUploadError("");
-    setCanOverwrite(false);
 
     try {
       const t = computeTotals(subjects);
@@ -752,12 +808,12 @@ export default function DiplomaModal({ student, onClose, onUploaded }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step]);
 
-  async function handleUpload(overwrite = false) {
+  // Always overwrites any existing file at the same path (upsert: true).
+  async function handleUpload() {
     if (!pdfBlob) return;
 
     setUploading(true);
     setUploadError("");
-    setCanOverwrite(false);
 
     try {
       const path = generatePath(student.roll_number);
@@ -765,17 +821,39 @@ export default function DiplomaModal({ student, onClose, onUploaded }) {
 
       const { error } = await secSupabase.storage.from(BUCKET).upload(path, file, {
         contentType: ALLOWED_MIME,
-        upsert: overwrite,
-        cacheControl: "3600",
+        upsert: true, // always overwrite the file at the same path
+        cacheControl: "0", // avoid serving a stale cached copy after replacing
       });
 
       if (error) {
-        const exists =
-          /already exists|duplicate/i.test(error.message || "") || String(error.statusCode) === "409";
-        setCanOverwrite(exists);
-        throw new Error(
-          exists ? "A diploma for this roll number is already uploaded." : error.message || "Upload failed."
-        );
+        throw new Error(error.message || "Upload failed.");
+      }
+
+      // Save the details next to the PDF so "Update Diploma" can reload them.
+      // A failure here is logged but doesn't fail the upload.
+      try {
+        const details = {
+          studentName,
+          fatherName,
+          motherName,
+          course,
+          courseFrom,
+          courseDuration,
+          marksheetNo,
+          certificateNo,
+          marksheetYear,
+          subjects,
+        };
+        const { error: jsonError } = await secSupabase.storage
+          .from(BUCKET)
+          .upload(
+            `${path}.json`,
+            new Blob([JSON.stringify(details)], { type: "application/json" }),
+            { contentType: "application/json", upsert: true, cacheControl: "0" }
+          );
+        if (jsonError) console.error("Couldn't save diploma details:", jsonError);
+      } catch (jsonErr) {
+        console.error("Couldn't save diploma details:", jsonErr);
       }
 
       setUploadResult({ path });
@@ -790,12 +868,13 @@ export default function DiplomaModal({ student, onClose, onUploaded }) {
 
   const show = entered && !closing;
   const fileName = `${generatePath(student.roll_number)}.pdf`;
+  const actionWord = isUpdate ? "Update" : "Upload";
 
   return createPortal(
     <div
       role="dialog"
       aria-modal="true"
-      aria-label="Upload diploma"
+      aria-label={`${actionWord} diploma`}
       className={[
         "fixed inset-0 z-[70] overflow-y-auto bg-background transition-opacity ease-out motion-reduce:transition-none",
         show ? "opacity-100 duration-300" : "opacity-0 duration-200",
@@ -813,7 +892,7 @@ export default function DiplomaModal({ student, onClose, onUploaded }) {
 
       <div className="mx-auto w-full max-w-2xl space-y-8 px-4 pb-20 pt-14 sm:px-6">
         <header className="pr-12">
-          <h2 className="font-display text-2xl text-secondary sm:text-3xl">Upload diploma</h2>
+          <h2 className="font-display text-2xl text-secondary sm:text-3xl">{actionWord} diploma</h2>
           <p className="mt-1 text-muted">
             {student.student_name || "Unnamed student"} · {student.roll_number}
           </p>
@@ -859,9 +938,25 @@ export default function DiplomaModal({ student, onClose, onUploaded }) {
           </div>
         )}
 
+        {/* ── Details (loading saved diploma, update mode) ── */}
+        {step === "details" && detailsLoading && (
+          <div className="flex flex-col items-center gap-3 py-16">
+            <Loader2 className="h-8 w-8 animate-spin text-primary" />
+            <p className="text-sm text-muted">Loading current diploma details…</p>
+          </div>
+        )}
+
         {/* ── Details ── */}
-        {step === "details" && (
+        {step === "details" && !detailsLoading && (
           <div className="space-y-8">
+            {isUpdate && (
+              <p className="rounded-lg bg-primaryLight/40 px-3 py-2 text-sm text-muted">
+                {savedFound
+                  ? "Loaded from the current diploma. Change what you need, then generate and upload to replace it."
+                  : "No saved details were found for the current diploma, so marks need to be entered again. Uploading will replace it."}
+              </p>
+            )}
+
             <Section title="Student" note="Filled in from the student's record. Edit anything that's wrong.">
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <Field
@@ -999,8 +1094,14 @@ export default function DiplomaModal({ student, onClose, onUploaded }) {
                 <div className="flex items-start gap-3">
                   <CheckCircle2 className="mt-0.5 h-6 w-6 shrink-0 text-green-600" />
                   <div>
-                    <p className="font-medium text-green-800">Diploma uploaded</p>
-                    <p className="mt-0.5 text-sm text-green-700">It's now stored for {student.roll_number}.</p>
+                    <p className="font-medium text-green-800">
+                      {isUpdate ? "Diploma updated" : "Diploma uploaded"}
+                    </p>
+                    <p className="mt-0.5 text-sm text-green-700">
+                      {isUpdate
+                        ? `The previous diploma for ${student.roll_number} has been replaced.`
+                        : `It's now stored for ${student.roll_number}.`}
+                    </p>
                   </div>
                 </div>
 
@@ -1087,21 +1188,20 @@ export default function DiplomaModal({ student, onClose, onUploaded }) {
                     Cancel
                   </GhostButton>
 
-                  {canOverwrite ? (
-                    <PrimaryButton className="flex-1" onClick={() => handleUpload(true)} disabled={uploading}>
-                      {uploading && <Loader2 className="h-4 w-4 animate-spin" />}
-                      {uploading ? "Replacing…" : "Replace existing diploma"}
-                    </PrimaryButton>
-                  ) : (
-                    <PrimaryButton
-                      className="flex-1"
-                      onClick={() => handleUpload(false)}
-                      disabled={!pdfBlob || generating || uploading}
-                    >
-                      {uploading && <Loader2 className="h-4 w-4 animate-spin" />}
-                      {uploading ? "Uploading…" : "Upload diploma"}
-                    </PrimaryButton>
-                  )}
+                  <PrimaryButton
+                    className="flex-1"
+                    onClick={handleUpload}
+                    disabled={!pdfBlob || generating || uploading}
+                  >
+                    {uploading && <Loader2 className="h-4 w-4 animate-spin" />}
+                    {uploading
+                      ? isUpdate
+                        ? "Updating…"
+                        : "Uploading…"
+                      : isUpdate
+                      ? "Update diploma"
+                      : "Upload diploma"}
+                  </PrimaryButton>
                 </div>
 
                 <p className="text-center text-xs text-muted">
@@ -1109,6 +1209,7 @@ export default function DiplomaModal({ student, onClose, onUploaded }) {
                   <code className="rounded bg-backgroundAlt px-1">
                     {BUCKET}/{generatePath(student.roll_number)}
                   </code>
+                  {isUpdate && " (replaces the current diploma)"}
                 </p>
               </>
             )}

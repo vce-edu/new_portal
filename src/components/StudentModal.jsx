@@ -226,8 +226,11 @@ export default function StudentModal({ student, onClose, onSaved }) {
   const [photoError, setPhotoError] = useState("");
 
   const [showDiploma, setShowDiploma] = useState(false);
-  // True from the moment "Upload Diploma" is clicked until the diploma modal is closed.
+  // True from the moment "Upload/Update Diploma" is clicked until the diploma modal is closed.
   const [leavingForDiploma, setLeavingForDiploma] = useState(false);
+  // Captured when the diploma modal opens, so the success screen doesn't flip
+  // into "update" mode once diploma_uploaded becomes true.
+  const [diplomaIsUpdate, setDiplomaIsUpdate] = useState(false);
 
   const [deleting, setDeleting] = useState(false);
 
@@ -302,8 +305,10 @@ export default function StudentModal({ student, onClose, onSaved }) {
   }
 
   // Fade this modal out first, then open the diploma modal on its own.
+  // If a diploma already exists, the modal opens in "update" mode.
   function openUploadDiploma() {
     if (diplomaFlowRef.current) return;
+    setDiplomaIsUpdate(data.diploma_uploaded === true);
     setLeavingForDiploma(true);
 
     const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
@@ -749,9 +754,8 @@ export default function StudentModal({ student, onClose, onSaved }) {
           <div className="flex flex-wrap items-center justify-center gap-2">
             <ActionButton
               icon={UploadCloud}
-              label={data.diploma_uploaded ? "Diploma Uploaded" : "Upload Diploma"}
+              label={data.diploma_uploaded ? "Update Diploma" : "Upload Diploma"}
               onClick={openUploadDiploma}
-              disabled={data.diploma_uploaded === true}
             />
             <ActionButton icon={Wallet} label="Pay Fees" onClick={openAddTransaction} />
             <ActionButton
@@ -1029,6 +1033,7 @@ export default function StudentModal({ student, onClose, onSaved }) {
       {showDiploma && (
         <DiplomaModal
           student={data}
+          isUpdate={diplomaIsUpdate}
           onClose={closeDiploma}
           onUploaded={handleDiplomaUploaded}
         />

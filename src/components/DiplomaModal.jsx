@@ -503,8 +503,9 @@ function TotalsSummary({ totals }) {
                 details saved next to the current diploma, and overwrites it on upload.
   - onClose:    called after the exit animation
   - onUploaded: optional, called once the PDF has been stored
+  - onDeleted:  optional, called once the diploma has been deleted (update mode only)
 */
-export default function DiplomaModal({ student, isUpdate = false, onClose, onUploaded }) {
+export default function DiplomaModal({ student, isUpdate = false, onClose, onUploaded, onDeleted }) {
   const [step, setStep] = useState(isUpdate ? "details" : "fee");
 
   // Fee check
@@ -547,6 +548,8 @@ export default function DiplomaModal({ student, isUpdate = false, onClose, onUpl
   const [uploading, setUploading] = useState(false);
   const [uploadResult, setUploadResult] = useState(null);
   const [uploadError, setUploadError] = useState("");
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
 
   // Enter / exit animation
   const [entered, setEntered] = useState(false);
@@ -557,7 +560,7 @@ export default function DiplomaModal({ student, isUpdate = false, onClose, onUpl
   onCloseRef.current = onClose;
 
   const busyRef = useRef(false);
-  busyRef.current = uploading;
+  busyRef.current = uploading || deleting;
 
   const previewUrlRef = useRef(null);
   previewUrlRef.current = previewUrl;
@@ -866,6 +869,44 @@ export default function DiplomaModal({ student, isUpdate = false, onClose, onUpl
     }
   }
 
+  // Update mode only: removes the PDF and its saved-details JSON from the bucket.
+  async function handleDelete() {
+    if (deleting || uploading) return;
+
+    const confirmed = window.confirm(
+      `Delete the diploma for ${student.roll_number}? This can't be undone.`
+    );
+    if (!confirmed) return;
+
+    setDeleting(true);
+    setDeleteError("");
+
+    try {
+      const path = generatePath(student.roll_number);
+      const { data: removed, error } = await secSupabase.storage
+        .from(BUCKET)
+        .remove([path, `${path}.json`]);
+
+      if (error) throw new Error(error.message || "Couldn't delete the diploma.");
+
+      // Supabase returns no error when a policy blocks the delete, it just
+      // returns an empty list, so check that the PDF was actually removed.
+      if (!removed || !removed.some((f) => f.name === path)) {
+        throw new Error(
+          "The diploma wasn't deleted. Check that the bucket allows deleting, or that the file exists."
+        );
+      }
+
+      await onDeleted?.();
+      setStep("deleted");
+    } catch (err) {
+      console.error("delete diploma:", err);
+      setDeleteError(err.message || "Couldn't delete the diploma. Try again.");
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   const show = entered && !closing;
   const fileName = `${generatePath(student.roll_number)}.pdf`;
   const actionWord = isUpdate ? "Update" : "Upload";
@@ -883,7 +924,7 @@ export default function DiplomaModal({ student, isUpdate = false, onClose, onUpl
       <button
         type="button"
         onClick={requestClose}
-        disabled={uploading}
+        disabled={uploading || deleting}
         aria-label="Close"
         className="fixed right-4 top-4 z-10 flex h-10 w-10 items-center justify-center rounded-full border border-border bg-background text-muted transition-colors hover:bg-primaryLight hover:text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 disabled:opacity-50 sm:right-5 sm:top-5"
       >
@@ -898,7 +939,47 @@ export default function DiplomaModal({ student, isUpdate = false, onClose, onUpl
           </p>
         </header>
 
-        <StepIndicator current={step} />
+        {step !== "deleted" && <StepIndicator current={step} />}
+
+        {/* Update mode: delete the current diploma */}
+        {isUpdate && step !== "deleted" && !uploadResult && (
+          <div className="space-y-2">
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={handleDelete}
+                disabled={deleting || uploading}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-red-200 px-3 py-1.5 text-sm font-medium text-red-600 transition-colors hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {deleting ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Trash2 className="h-4 w-4" />
+                )}
+                {deleting ? "Deleting…" : "Delete diploma"}
+              </button>
+            </div>
+            {deleteError && <ErrorBox>{deleteError}</ErrorBox>}
+          </div>
+        )}
+
+        {/* ── Deleted ── */}
+        {step === "deleted" && (
+          <div className="space-y-4 rounded-xl border border-green-200 bg-green-50 p-5">
+            <div className="flex items-start gap-3">
+              <CheckCircle2 className="mt-0.5 h-6 w-6 shrink-0 text-green-600" />
+              <div>
+                <p className="font-medium text-green-800">Diploma deleted</p>
+                <p className="mt-0.5 text-sm text-green-700">
+                  The diploma for {student.roll_number} has been removed. You can upload a new one anytime.
+                </p>
+              </div>
+            </div>
+            <PrimaryButton className="w-full" onClick={requestClose}>
+              Done
+            </PrimaryButton>
+          </div>
+        )}
 
         {/* ── Fee check ── */}
         {step === "fee" && (

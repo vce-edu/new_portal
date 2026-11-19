@@ -334,6 +334,19 @@ export default function StudentModal({ student, onClose, onSaved }) {
     }
   }
 
+  // The diploma was deleted from the bucket, so clear the flag on the record.
+  async function handleDiplomaDeleted() {
+    const result = await persist({
+      diploma_uploaded: false,
+    });
+
+    if (!result.ok) {
+      throw new Error(
+        `The diploma file was deleted, but the record couldn't be updated: ${result.message}`
+      );
+    }
+  }
+
   const editingRef = useRef(null);
   editingRef.current = editingKey;
   useCloseOnEscape(() => {
@@ -1036,6 +1049,7 @@ export default function StudentModal({ student, onClose, onSaved }) {
           isUpdate={diplomaIsUpdate}
           onClose={closeDiploma}
           onUploaded={handleDiplomaUploaded}
+          onDeleted={handleDiplomaDeleted}
         />
       )}
     </>

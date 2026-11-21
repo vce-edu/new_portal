@@ -31,6 +31,8 @@ const PHOTO_BUCKET = "student-photos";
 const EXIT_MS = 220;
 
 const SUBJECT_OPTIONS = [
+  "MS OFFICE 2019",
+  "LIBRE OFFICE",
   "MS Word 2019",
   "MS Excel 2019",
   "MS PowerPoint 2019",
